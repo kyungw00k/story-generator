@@ -652,6 +652,88 @@ class StoryGenerator:
         self.db_path = db_path
         self.init_db()
         
+        # 장르 정의
+        self.genres = {
+            "로맨스": {
+                "배경": ["현대", "사극"],
+                "핵심_요소": ["연애", "로맨스", "관계"],
+                "클리셰": [
+                    "우연한 만남",
+                    "계약 관계",
+                    "신분 차이",
+                    "오해와 화해",
+                    "삼각관계",
+                    "재회",
+                    "첫사랑"
+                ]
+            },
+            "로맨스_판타지": {
+                "배경": ["이세계", "판타지 세계", "중세 유럽풍"],
+                "핵심_요소": ["로맨스", "마법", "모험", "신분제"],
+                "클리셰": [
+                    "빙의/환생",
+                    "악녀/빌런",
+                    "황녀/공녀",
+                    "마법 아카데미",
+                    "숨겨진 신분",
+                    "운명적 만남",
+                    "계약 결혼"
+                ]
+            },
+            "판타지": {
+                "배경": ["중세 판타지", "이세계"],
+                "핵심_요소": ["마법", "모험", "전투", "성장"],
+                "클리셰": [
+                    "용사와 마왕",
+                    "마법 수행",
+                    "던전 공략",
+                    "파티 결성",
+                    "전설의 무기",
+                    "선택받은 자",
+                    "길드 시스템"
+                ]
+            },
+            "무협": {
+                "배경": ["고대 중국", "중세 중국", "가상의 무협 세계"],
+                "핵심_요소": ["무공", "협객", "문파", "의리"],
+                "클리셰": [
+                    "무공 비급",
+                    "문파 갈등",
+                    "고수와 제자",
+                    "강호 정의",
+                    "내공 수련",
+                    "협객의 도",
+                    "은원과 복수"
+                ]
+            },
+            "현대_판타지": {
+                "배경": ["현대", "근미래"],
+                "핵심_요소": ["판타지", "현실", "성공", "성장"],
+                "클리셰": [
+                    "각성자",
+                    "던전 출현",
+                    "헌터/레이더",
+                    "길드 시스템",
+                    "스킬 창",
+                    "랭킹 시스템",
+                    "히든 퀘스트"
+                ]
+            },
+            "게임_판타지": {
+                "배경": ["근미래", "게임 세계"],
+                "핵심_요소": ["VRMMORPG", "게임", "모험"],
+                "클리셰": [
+                    "게임 로그인",
+                    "레벨업",
+                    "아이템 수집",
+                    "퀘스트",
+                    "NPC와 교류",
+                    "버그/시스템 오류",
+                    "현실과 가상의 경계"
+                ]
+            }
+        }
+        
         # LLM 모델 초기화
         if llm_type == "gguf":
             gguf_params = {
@@ -671,6 +753,7 @@ class StoryGenerator:
             raise ValueError(f"Unsupported LLM type: {llm_type}")
 
         self.current_dir = None  # 현재 작업 디렉토리 저장용
+        self.selected_genre = None  # 선택된 장르 저장
 
     def init_db(self):
         """데이터베이스 초기화"""
@@ -792,8 +875,65 @@ class StoryGenerator:
         
         return '\n\n'.join(formatted)
 
+    def _select_genre(self, trending_topics: List[Dict[str, Any]]) -> str:
+        """트렌드 데이터를 기반으로 적합한 장르 선택"""
+        genre_prompt = (
+            "System: 다음 트렌드 데이터를 분석하여 가장 적합한 웹소설 장르를 선택해주세요.\n\n"
+            "선택 가능한 장르:\n"
+            "- 로맨스: 현대/사극 배경의 연애 이야기\n"
+            "- 로맨스_판타지: 판타지 세계관의 로맨스\n"
+            "- 판타지: 중세 서양 판타지의 모험과 전투\n"
+            "- 무협: 중국풍 세계관의 무공과 협객\n"
+            "- 현대_판타지: 현대 배경의 판타지\n"
+            "- 게임_판타지: VR게임 배경의 판타지\n\n"
+            "트렌드 데이터:\n"
+        )
+        
+        # 트렌드 데이터 추가
+        for topic in trending_topics:
+            genre_prompt += f"- {topic['keyword']}\n"
+            for news in topic.get('news_items', []):
+                genre_prompt += f"  * {news.get('title', '')}\n"
+        
+        genre_prompt += (
+            "\n다음 JSON 형식으로 응답해주세요:\n"
+            "{\n"
+            '  "선택_장르": "장르명",\n'
+            '  "선택_이유": "선택 이유 설명"\n'
+            "}\n\n"
+            "Assistant: "
+        )
+        
+        try:
+            response = self.llm.generate(genre_prompt)
+            result = json.loads(response)
+            
+            selected_genre = result['선택_장르']
+            if selected_genre not in self.genres:
+                self.logger.warning(f"Invalid genre selected: {selected_genre}")
+                selected_genre = random.choice(list(self.genres.keys()))
+            
+            self.logger.info(f"Selected genre: {selected_genre}")
+            self.logger.info(f"Selection reason: {result['선택_이유']}")
+            
+            return selected_genre
+            
+        except Exception as e:
+            self.logger.error(f"Genre selection failed: {e}")
+            return random.choice(list(self.genres.keys()))
+
     def _analyze_trends(self, trending_topics: List[Dict[str, Any]]) -> Dict[str, Any]:
         """트렌드 데이터 분석하여 소설 구조의 기초 생성"""
+        # 장르 선택
+        self.selected_genre = self._select_genre(trending_topics)
+        genre_info = self.genres[self.selected_genre]
+        
+        self.logger.info(f"\n선택된 장르: {self.selected_genre}")
+        self.logger.info(f"장르 특성:")
+        self.logger.info(f"- 배경: {', '.join(genre_info['배경'])}")
+        self.logger.info(f"- 핵심 요소: {', '.join(genre_info['핵심_요소'])}")
+        self.logger.info(f"- 주요 클리셰: {', '.join(genre_info['클리셰'])}\n")
+        
         # 트렌드 데이터 요약
         summarized_trends = []
         for i, topic in enumerate(trending_topics[:10], 1):  # 상위 10개만 사용
@@ -803,54 +943,47 @@ class StoryGenerator:
             summarized_trends.append('\n'.join(trend_info))
         
         analysis_prompt = (
-            "System: JSON 형식으로만 응답하는 소설 구조 분석 시스템입니다. 다음 규칙을 반드시 따라주세요:\n"
-            "1. 유효한 JSON 객체만 출력합니다\n"
-            "2. 중괄호로 시작하고 끝냅니다\n"
-            "3. 설명이나 부가 텍스트를 포함하지 않습니다\n"
-            "4. 즉시 JSON 응답을 출력합니다\n\n"
-            
-            "예시 응답:\n"
-            "{{\n"
-            '  "주제": "현대 사회와 기술",\n'
-            '  "부주제": ["인공지능", "인간성"],\n'
-            '  "인물_제안": [{{\n'
-            '    "유형": "기술 전문가",\n'
-            '    "영감": "트렌드_주제",\n'
-            '    "역할": "주인공"\n'
-            '  }}]\n'
-            "}}\n\n"
-            
-            "User: 다음 트렌드를 바탕으로 한국적 정서가 담긴 소설 구조를 만들어주세요:\n\n"
-            "{0}\n\n"
-            
-            "필요한 JSON 구조:\n"
-            "{{\n"
+            "System: JSON 형식으로만 응답하는 소설 구조 분석 시스템입니다. "
+            "선택된 장르의 특성과 클리셰를 반영하여 분석해주세요.\n\n"
+            f"선택된 장르: {self.selected_genre}\n"
+            f"장르 특성:\n"
+            f"- 배경: {', '.join(genre_info['배경'])}\n"
+            f"- 핵심 요소: {', '.join(genre_info['핵심_요소'])}\n"
+            f"- 주요 클리셰: {', '.join(genre_info['클리셰'])}\n\n"
+            "응답은 반드시 다음 JSON 형식을 따라주세요:\n"
+            "{\n"
             '  "주제": "문자열",\n'
             '  "부주제": ["문자열"],\n'
-            '  "인물_제안": [{{\n'
+            '  "인물_제안": [{\n'
             '    "유형": "문자열",\n'
             '    "영감": "문자열",\n'
             '    "역할": "문자열",\n'
             '    "배경_설정": "문자열",\n'
             '    "관련_주제": ["문자열"]\n'
-            '  }}],\n'
-            '  "갈등_요소": [{{\n'
+            '  }],\n'
+            '  "갈등_요소": [{\n'
             '    "유형": "문자열",\n'
             '    "영감": "문자열",\n'
             '    "구체적_설정": "문자열",\n'
             '    "전개": "문자열",\n'
             '    "연관_주제": ["문자열"]\n'
-            '  }}],\n'
-            '  "배경_제안": {{\n'
+            '  }],\n'
+            '  "배경_제안": {\n'
             '    "시대": "문자열",\n'
             '    "장소": "문자열",\n'
             '    "분위기": "문자열",\n'
             '    "영감_요소": ["문자열"]\n'
-            '  }}\n'
-            "}}\n\n"
-            
+            '  },\n'
+            '  "장르_요소": {\n'
+            '    "선택_이유": "문자열",\n'
+            '    "활용_클리셰": ["문자열"],\n'
+            '    "주요_특성": ["문자열"]\n'
+            '  }\n'
+            "}\n\n"
+            "User: 다음 트렌드를 바탕으로 선택된 장르에 맞는 소설 구조를 분석해주세요:\n\n"
+            f"{' '.join(summarized_trends)}\n\n"
             "Assistant: "
-        ).format('\n\n'.join(summarized_trends))
+        )
         
         response = self.llm.generate(analysis_prompt, max_tokens=10240)
         return self._extract_json_from_response(response, validation_type='analysis')
@@ -1035,13 +1168,15 @@ class StoryGenerator:
             "응답은 반드시 다음 JSON 형식을 따라주세요:\n"
             "{\n"
             '  "전체_감정_곡선": "전체 스토리의 감정 흐름 설명",\n'
-            '  "챕터별_감정": [{\n'
-            '    "챕터_번호": 1,\n'
-            '    "주요_감정": ["감정1", "감정2"],\n'
-            '    "긴장도": 1-10 사이 숫자,\n'
-            '    "감정_변화": "이 챕터에서의 감정 변화 설명",\n'
-            '    "연결_포인트": "다음 챕터와의 감정적 연결점"\n'
-            '  }]\n'
+            '  "챕터별_감정": [\n'
+            '    {\n'
+            '      "챕터_번호": 1,\n'
+            '      "주요_감정": ["감정1", "감정2"],\n'
+            '      "긴장도": 5,\n'
+            '      "감정_변화": "이 챕터에서의 감정 변화 설명",\n'
+            '      "연결_포인트": "다음 챕터와의 감정적 연결점"\n'
+            '    }\n'
+            '  ]\n'
             "}\n\n"
             f"소설 제목: {structure['제목']}\n"
             f"주제: {structure['주제']}\n"
@@ -1053,27 +1188,89 @@ class StoryGenerator:
             emotion_prompt += (
                 f"\n{i}. {chapter['제목']}\n"
                 f"   사건: {', '.join(chapter['사건'])}\n"
-                f"   갈등: {', '.join(chapter['갈등'])}"
+                f"   갈등: {', '.join(chapter['갈등'])}\n"
+                f"   요약: {chapter['요약']}"
             )
         
-        try:
-            response = self.llm.generate(emotion_prompt, max_tokens=4096)
-            emotion_map = json.loads(response)
-            
-            # 로깅
-            self.logger.info("\n=== 감정선 맵 생성 완료 ===")
-            self.logger.info(f"전체 감정 곡선: {emotion_map['전체_감정_곡선']}")
-            for chapter in emotion_map['챕터별_감정']:
-                self.logger.info(f"\n챕터 {chapter['챕터_번호']}:")
-                self.logger.info(f"주요 감정: {', '.join(chapter['주요_감정'])}")
-                self.logger.info(f"긴장도: {chapter['긴장도']}")
-                self.logger.info(f"감정 변화: {chapter['감정_변화']}")
-            
-            return emotion_map
-            
-        except Exception as e:
-            self.logger.error(f"감정선 맵 생성 중 오류 발생: {e}")
-            return None
+        emotion_prompt += (
+            "\n\n요구사항:\n"
+            "1. 각 챕터의 감정선이 전체 스토리의 흐름과 일치해야 합니다\n"
+            "2. 긴장도는 1-10 사이의 정수여야 합니다\n"
+            "3. 주요 감정은 2-3개의 핵심 감정을 포함해야 합니다\n"
+            "4. 감정 변화는 구체적이고 명확해야 합니다\n"
+            "5. 연결 포인트는 다음 챕터와의 자연스러운 감정적 전환을 설명해야 합니다\n"
+            "6. 마지막 챕터의 연결 포인트는 전체 이야기의 마무리를 설명해야 합니다\n\n"
+            "Assistant: "
+        )
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.llm.generate(emotion_prompt, max_tokens=4096)
+                
+                # JSON 시작과 끝 위치 찾기
+                start_idx = response.find('{')
+                end_idx = response.rfind('}') + 1
+                
+                if start_idx == -1 or end_idx <= 0:
+                    raise ValueError("JSON 구조를 찾을 수 없습니다")
+                
+                json_str = response[start_idx:end_idx]
+                emotion_map = json.loads(json_str)
+                
+                # 필수 키 검증
+                if '전체_감정_곡선' not in emotion_map:
+                    raise ValueError("전체_감정_곡선이 누락되었습니다")
+                if '챕터별_감정' not in emotion_map:
+                    raise ValueError("챕터별_감정이 누락되었습니다")
+                
+                # 각 챕터별 감정 데이터 검증
+                for chapter_emotion in emotion_map['챕터별_감정']:
+                    required_keys = ['챕터_번호', '주요_감정', '긴장도', '감정_변화', '연결_포인트']
+                    missing_keys = [key for key in required_keys if key not in chapter_emotion]
+                    if missing_keys:
+                        raise ValueError(f"챕터 {chapter_emotion.get('챕터_번호', '알 수 없음')}의 감정 데이터에서 다음 키가 누락됨: {missing_keys}")
+                    
+                    # 긴장도 값 검증
+                    if not isinstance(chapter_emotion['긴장도'], (int, float)) or not 1 <= chapter_emotion['긴장도'] <= 10:
+                        chapter_emotion['긴장도'] = max(1, min(10, int(float(str(chapter_emotion['긴장도'])))))
+                    
+                    # 주요_감정이 리스트인지 확인
+                    if not isinstance(chapter_emotion['주요_감정'], list):
+                        chapter_emotion['주요_감정'] = [str(chapter_emotion['주요_감정'])]
+                
+                # 로깅
+                self.logger.info("\n=== 감정선 맵 생성 완료 ===")
+                self.logger.info(f"전체 감정 곡선: {emotion_map['전체_감정_곡선']}")
+                for chapter in emotion_map['챕터별_감정']:
+                    self.logger.info(f"\n챕터 {chapter['챕터_번호']}:")
+                    self.logger.info(f"주요 감정: {', '.join(chapter['주요_감정'])}")
+                    self.logger.info(f"긴장도: {chapter['긴장도']}")
+                    self.logger.info(f"감정 변화: {chapter['감정_변화']}")
+                
+                return emotion_map
+                
+            except Exception as e:
+                self.logger.error(f"감정선 맵 생성 시도 {attempt + 1} 실패: {e}")
+                if attempt == max_retries - 1:
+                    self.logger.error("모든 시도 실패. 기본 감정선 맵 생성")
+                    # 기본 감정선 맵 생성
+                    default_map = {
+                        "전체_감정_곡선": "기본적인 기승전결 구조를 따르는 감정선",
+                        "챕터별_감정": []
+                    }
+                    for i in range(len(structure['챕터'])):
+                        default_map["챕터별_감정"].append({
+                            "챕터_번호": i + 1,
+                            "주요_감정": ["기대", "긴장"],
+                            "긴장도": min(8, max(3, i + 3)),  # 3부터 시작해서 점진적 상승
+                            "감정_변화": "기본적인 감정 변화",
+                            "연결_포인트": "다음 챕터로의 자연스러운 전개"
+                        })
+                    return default_map
+                time.sleep(2)  # 재시도 전 대기
+        
+        return None
 
     def _generate_chapter(self, structure: Dict, chapter: Dict, analysis: Dict, chapter_index: int = 1, previous_chapters: List[str] = None, emotion_map: Dict = None) -> str:
         """각 챕터의 상세 내용 생성"""
@@ -1126,11 +1323,9 @@ class StoryGenerator:
             "System: 당신은 소설 챕터를 생성하는 AI 어시스턴트입니다. "
             "다음 규칙을 엄격히 따라주세요:\n"
             "1. 응답은 반드시 유효한 JSON이어야 합니다\n"
-            "2. 최상위 레벨에 다음 키들이 반드시 포함되어야 합니다:\n"
-            "   - 제목: 챕터 제목 (문자열)\n"
+            "2. 최상위 레벨에 다음 키가 반드시 포함되어야 합니다:\n"
             "   - 내용: 챕터 내용 (문자열)\n"
             "3. 마크다운 포맷을 활용해주세요:\n"
-            "   - 챕터 제목은 H1 (#)\n"
             "   - 섹션 제목은 H2 (##)\n"
             "   - 중요한 장면 전환은 수평선 (---)\n"
             "   - 대화는 인용구 (>)\n"
@@ -1168,7 +1363,6 @@ class StoryGenerator:
             "7. 지정된 감정선과 긴장도를 자연스럽게 표현해주세요\n\n"
             "다음 JSON 구조로 출력해주세요:\n"
             "{\n"
-            '  "제목": "챕터 제목",\n'
             '  "내용": "챕터 내용"\n'
             "}\n\n"
             "Assistant: "
@@ -1181,14 +1375,11 @@ class StoryGenerator:
             chapter_data = json.loads(response)
             
             # 필수 키 확인
-            required_keys = ['제목', '내용']
-            missing_keys = [key for key in required_keys if not chapter_data.get(key)]
+            if '내용' not in chapter_data:
+                raise ValueError("필수 키 '내용'이 누락되었습니다")
             
-            if missing_keys:
-                raise ValueError(f"필수 키가 누락되었습니다: {missing_keys}")
-            
-            # 챕터 내용 반환 (마크다운 포맷)
-            return f"# {chapter_data['제목']}\n\n{chapter_data['내용']}"
+            # 챕터 내용 반환
+            return chapter_data['내용']
             
         except (json.JSONDecodeError, ValueError) as e:
             self.logger.error(f"챕터 생성 중 오류 발생: {e}")
@@ -1309,86 +1500,222 @@ class StoryGenerator:
         
         return structure, analysis, completed_chapters
 
-    def _review_and_refine_story(self, story_content: str, structure: Dict) -> str:
-        """소설 내용을 검토하고 개선하여 완성도를 높입니다."""
-        self.logger.info("\n=== 소설 검토 및 개선 단계 시작 ===")
+    def _analyze_story_for_improvement(self, story_content: str, structure: Dict, chapter_contents: List[str]) -> Dict:
+        """소설의 전체적인 개선점과 챕터별 상세 개선점을 분석합니다."""
+        self.logger.info("\n=== 소설 분석 시작 ===")
         
-        review_prompt = (
-            "System: 당신은 전문 소설 편집자입니다. 다음 소설을 검토하고 개선해주세요.\n"
-            "다음 기준으로 검토하고 수정해주세요:\n"
-            "1. 문체의 일관성\n"
-            "2. 캐릭터 행동과 성격의 일관성\n"
-            "3. 사건의 개연성\n"
-            "4. 감정선의 자연스러운 전개\n"
-            "5. 한국적 정서의 적절한 표현\n"
-            "6. 불필요한 반복이나 군더더기 제거\n"
-            "7. 마크다운 포맷 활용:\n"
-            "   - 챕터 제목은 H1 (#)\n"
-            "   - 섹션 제목은 H2 (##)\n"
-            "   - 중요한 장면 전환은 수평선 (---)\n"
-            "   - 대화는 인용구 (>)\n"
-            "   - 강조가 필요한 부분은 이탤릭 (*) 또는 볼드 (**)\n"
-            "   - 시간/장소 전환은 이탤릭 (*)\n"
-            "8. 목차 생성:\n"
-            "## 목차\n\n"
-            + '\n'.join([f"{i}. [{chapter['제목']}](#{chapter['제목'].replace(' ', '-')})" for i, chapter in enumerate(structure['챕터'], 1)]) + "\n---\n\n"
+        analysis_prompt = (
+            "System: 당신은 소설 분석 전문가입니다. "
+            "다음 소설을 분석하여 개선점을 제시해주세요.\n\n"
             "응답은 반드시 다음 JSON 형식을 따라주세요:\n"
             "{\n"
-            '  "개선_내용": "수정된 전체 소설 내용 (마크다운 포맷 포함)",\n'
-            '  "수정_사항": ["수정된 주요 내용 리스트"],\n'
-            '  "개선_포인트": ["개선된 부분에 대한 설명"]\n'
+            '  "전체_개선점": {\n'
+            '    "구조적_개선": ["개선점1", "개선점2"],\n'
+            '    "문체_개선": ["개선점1", "개선점2"],\n'
+            '    "캐릭터_개선": ["개선점1", "개선점2"],\n'
+            '    "스토리_개선": ["개선점1", "개선점2"]\n'
+            '  },\n'
+            '  "챕터별_개선점": [{\n'
+            '    "챕터_번호": 1,\n'
+            '    "구조": ["개선점1", "개선점2"],\n'
+            '    "문체": ["개선점1", "개선점2"],\n'
+            '    "캐릭터": ["개선점1", "개선점2"],\n'
+            '    "스토리": ["개선점1", "개선점2"],\n'
+            '    "연결성": ["이전 챕터와의 연결성 개선점", "다음 챕터와의 연결성 개선점"]\n'
+            '  }]\n'
             "}\n\n"
             f"소설 제목: {structure['제목']}\n"
             f"주제: {structure['주제']}\n\n"
-            "원본 내용:\n"
-            f"{story_content}\n\n"
+            "챕터별 내용:\n"
+        )
+        
+        # 챕터별 내용 추가
+        for i, chapter in enumerate(chapter_contents, 1):
+            analysis_prompt += f"\n=== 챕터 {i}: {structure['챕터'][i-1]['제목']} ===\n"
+            analysis_prompt += chapter + "\n"
+        
+        try:
+            response = self.llm.generate(analysis_prompt, max_tokens=10240)
+            analysis = json.loads(response)
+            
+            # 분석 결과 로깅
+            self.logger.info("\n=== 분석 결과 ===")
+            self.logger.info("\n전체 개선점:")
+            for category, points in analysis['전체_개선점'].items():
+                self.logger.info(f"\n{category}:")
+                for point in points:
+                    self.logger.info(f"- {point}")
+            
+            return analysis
+            
+        except Exception as e:
+            self.logger.error(f"소설 분석 중 오류 발생: {e}")
+            raise
+
+    def _improve_chapter(self, chapter_content: str, chapter_number: int, analysis: Dict, structure: Dict) -> str:
+        """개별 챕터를 개선합니다."""
+        self.logger.info(f"\n=== 챕터 {chapter_number} 개선 시작 ===")
+        
+        chapter_analysis = next(
+            (ch for ch in analysis['챕터별_개선점'] if ch['챕터_번호'] == chapter_number),
+            None
+        )
+        
+        if not chapter_analysis:
+            self.logger.warning(f"챕터 {chapter_number}의 분석 정보를 찾을 수 없습니다.")
+            return chapter_content
+        
+        improvement_prompt = (
+            "System: 당신은 소설 개선 전문가입니다. "
+            "다음 개선점들을 반영하여 챕터를 개선해주세요.\n\n"
+            "개선이 필요한 부분:\n"
+        )
+        
+        # 개선점 추가
+        for category in ['구조', '문체', '캐릭터', '스토리', '연결성']:
+            if category in chapter_analysis and chapter_analysis[category]:
+                improvement_prompt += f"\n{category} 개선점:\n"
+                for point in chapter_analysis[category]:
+                    improvement_prompt += f"- {point}\n"
+        
+        improvement_prompt += (
+            "\n전체 스토리 개선점:\n"
+            + "\n".join([f"- {point}" for point in analysis['전체_개선점']['스토리_개선']])
+            + "\n\n원본 챕터 내용:\n"
+            + chapter_content
+            + "\n\n"
+            "개선된 챕터를 다음 JSON 형식으로 출력해주세요:\n"
+            "{\n"
+            '  "개선된_내용": "개선된 챕터 전문",\n'
+            '  "개선_사항": ["실제로 적용된 개선 사항 리스트"]\n'
+            "}\n\n"
             "Assistant: "
         )
         
         try:
-            response = self.llm.generate(review_prompt, max_tokens=10240)
-            review_data = json.loads(response)
+            response = self.llm.generate(improvement_prompt, max_tokens=20480)
+            result = json.loads(response)
             
-            # 수정 사항 로깅
-            self.logger.info("\n=== 소설 개선 사항 ===")
-            for i, change in enumerate(review_data['수정_사항'], 1):
-                self.logger.info(f"{i}. {change}")
+            # 개선 사항 로깅
+            self.logger.info(f"\n챕터 {chapter_number} 개선 사항:")
+            for improvement in result['개선_사항']:
+                self.logger.info(f"- {improvement}")
             
-            self.logger.info("\n=== 개선된 포인트 ===")
-            for i, point in enumerate(review_data['개선_포인트'], 1):
-                self.logger.info(f"{i}. {point}")
-            
-            # 마크다운 메타데이터 추가
-            metadata = (
-                "---\n"
-                f"title: {structure['제목']}\n"
-                f"author: AI Story Generator\n"
-                f"date: {datetime.now().strftime('%Y-%m-%d')}\n"
-                f"theme: {structure['주제']}\n"
-                "---\n\n"
-            )
-            
-            # 목차 생성
-            toc = "## 목차\n\n"
-            for i, chapter in enumerate(structure['챕터'], 1):
-                toc += f"{i}. [{chapter['제목']}](#{chapter['제목'].replace(' ', '-')})\n"
-            toc += "\n---\n\n"
-            
-            improved_content = metadata + toc + review_data['개선_내용']
-            return improved_content
+            return result['개선된_내용']
             
         except Exception as e:
-            self.logger.error(f"소설 개선 중 오류 발생: {e}")
-            return story_content
+            self.logger.error(f"챕터 {chapter_number} 개선 중 오류 발생: {e}")
+            return chapter_content
+
+    def _review_and_refine_story(self, story_content: str, structure: Dict) -> str:
+        """소설 내용을 검토하고 개선하여 완성도를 높입니다."""
+        self.logger.info("\n=== 소설 검토 및 개선 단계 시작 ===")
+        
+        # 챕터별 내용 로드
+        chapter_contents = []
+        for i in range(1, 9):
+            chapter_path = os.path.join(self.current_dir, f'chapter_{i:02d}.txt')
+            with open(chapter_path, 'r', encoding='utf-8') as f:
+                chapter_contents.append(f.read())
+        
+        improved_content = story_content
+        
+        for iteration in range(3):  # 3회 반복
+            self.logger.info(f"\n=== 개선 반복 {iteration + 1}/3 시작 ===")
+            
+            # 이전 개선 결과를 기반으로 챕터 내용 업데이트
+            if iteration > 0:
+                chapter_contents = []
+                for i in range(1, 9):
+                    improved_chapter_path = os.path.join(
+                        self.current_dir,
+                        f'chapter_{i:02d}_improved_{iteration}.txt'
+                    )
+                    if os.path.exists(improved_chapter_path):
+                        with open(improved_chapter_path, 'r', encoding='utf-8') as f:
+                            chapter_contents.append(f.read())
+                    else:
+                        # 이전 개선 파일이 없으면 원본 챕터 사용
+                        original_chapter_path = os.path.join(self.current_dir, f'chapter_{i:02d}.txt')
+                        with open(original_chapter_path, 'r', encoding='utf-8') as f:
+                            chapter_contents.append(f.read())
+            
+            # Step 1: 전체 분석
+            analysis = self._analyze_story_for_improvement(improved_content, structure, chapter_contents)
+            
+            # 분석 결과 저장
+            analysis_path = os.path.join(
+                self.current_dir,
+                f'improvement_analysis_{iteration + 1}.json'
+            )
+            with open(analysis_path, 'w', encoding='utf-8') as f:
+                json.dump(analysis, f, ensure_ascii=False, indent=2)
+            
+            # Step 2: 챕터별 개선
+            improved_chapters = []
+            for i, chapter_content in enumerate(chapter_contents, 1):
+                improved_chapter = self._improve_chapter(
+                    chapter_content, i, analysis, structure
+                )
+                improved_chapters.append(improved_chapter)
+                
+                # 개선된 챕터 저장
+                improved_chapter_path = os.path.join(
+                    self.current_dir,
+                    f'chapter_{i:02d}_improved_{iteration + 1}.txt'
+                )
+                with open(improved_chapter_path, 'w', encoding='utf-8') as f:
+                    f.write(improved_chapter)
+            
+            # Step 3: 전체 소설 재구성
+            chapter_contents = improved_chapters
+            improved_content = "\n\n".join(improved_chapters)
+            
+            # 개선된 전체 소설 저장
+            full_story_path = os.path.join(
+                self.current_dir,
+                f'full_story_improved_{iteration + 1}.txt'
+            )
+            with open(full_story_path, 'w', encoding='utf-8') as f:
+                f.write(improved_content)
+            
+            self.logger.info(f"반복 {iteration + 1} 완료 - 파일 저장됨: {full_story_path}")
+        
+        # 마크다운 메타데이터 추가
+        metadata = (
+            "---\n"
+            f"title: {structure['제목']}\n"
+            f"author: AI Story Generator\n"
+            f"date: {datetime.now().strftime('%Y-%m-%d')}\n"
+            f"theme: {structure['주제']}\n"
+            "---\n\n"
+        )
+        
+        # 목차 생성
+        toc = "## 목차\n\n"
+        for i, chapter in enumerate(structure['챕터'], 1):
+            toc += f"{i}. [{chapter['제목']}](#{chapter['제목'].replace(' ', '-')})\n"
+        toc += "\n---\n\n"
+        
+        return metadata + toc + improved_content
 
     def generate_story(self, trending_topics: List[Dict[str, Any]], output_dir: str = None) -> Dict[str, Any]:
-        """전체 소설 생성 프로세스"""
         try:
             # 출력 디렉토리 설정
             if output_dir is None:
                 today = datetime.now().strftime('%Y-%m-%d')
                 safe_title = "temp_story"
-                output_dir = f"{today}_{safe_title}"
+                # 절대 경로로 output 디렉토리 설정
+                base_output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+                output_dir = os.path.join(base_output_dir, f"{today}_{safe_title}")
+            elif not output_dir.startswith(os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")):
+                # output_dir이 지정되었지만 output 디렉토리 하위가 아닌 경우
+                base_output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+                output_dir = os.path.join(base_output_dir, os.path.basename(output_dir))
+            
+            # output 디렉토리가 없으면 생성
+            base_output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+            os.makedirs(base_output_dir, exist_ok=True)
             
             # 디렉토리가 없으면 생성
             if not os.path.exists(output_dir):
@@ -1469,7 +1796,10 @@ class StoryGenerator:
                     # 챕터 저장
                     chapter_path = os.path.join(output_dir, f'chapter_{i:02d}.txt')
                     with open(chapter_path, 'w', encoding='utf-8') as f:
-                        f.write(f"# {chapter['제목']}\n\n{chapter_content}")
+                        # 챕터 내용에 이미 제목이 포함되어 있는지 확인
+                        if not chapter_content.startswith(f"# {chapter['제목']}"):
+                            f.write(f"# {chapter['제목']}\n\n")
+                        f.write(chapter_content)
                 
                 full_content.append(chapter_content)
                 previous_chapters.append(chapter_content)
@@ -1540,6 +1870,81 @@ class StoryGenerator:
                 self.logger.info(f"다음 디렉토리에서 이어서 작업할 수 있습니다: {self.current_dir}")
             return None
 
+    def refine_existing_story(self, story_dir: str) -> Dict[str, Any]:
+        """기존에 생성된 소설을 개선합니다."""
+        try:
+            self.logger.info(f"\n=== 기존 소설 개선 시작: {story_dir} ===")
+            
+            # 현재 작업 디렉토리 설정
+            self.current_dir = story_dir
+            
+            # 필요한 파일들 확인
+            required_files = [
+                'structure.json',
+                'analysis.json',
+                'emotion_map.json',
+                'full_story.txt'
+            ]
+            
+            # 챕터 파일들도 확인
+            chapter_files = [f'chapter_{i:02d}.txt' for i in range(1, 9)]
+            
+            # 모든 필요 파일 존재 확인
+            missing_files = []
+            for file in required_files + chapter_files:
+                if not os.path.exists(os.path.join(story_dir, file)):
+                    missing_files.append(file)
+            
+            if missing_files:
+                raise FileNotFoundError(f"다음 파일들을 찾을 수 없습니다: {', '.join(missing_files)}")
+            
+            # 필요한 파일들 로드
+            with open(os.path.join(story_dir, 'structure.json'), 'r', encoding='utf-8') as f:
+                structure = json.load(f)
+            
+            with open(os.path.join(story_dir, 'full_story.txt'), 'r', encoding='utf-8') as f:
+                original_content = f.read()
+            
+            # 개선 작업 수행
+            self.logger.info("\n=== 소설 검토 및 개선 시작 ===")
+            improved_content = self._review_and_refine_story(original_content, structure)
+            
+            # 개선된 버전 저장
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            improved_story_path = os.path.join(story_dir, f'improved_story_{timestamp}.txt')
+            with open(improved_story_path, 'w', encoding='utf-8') as f:
+                f.write(improved_content)
+            
+            # 로그 파일에 개선 정보 추가
+            log_path = os.path.join(story_dir, f'refinement_{timestamp}.log')
+            original_length = len(original_content)
+            improved_length = len(improved_content)
+            
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"=== 소설 개선 로그 ===\n")
+                f.write(f"개선 시간: {datetime.now().isoformat()}\n")
+                f.write(f"제목: {structure['제목']}\n")
+                f.write(f"원본 길이: {original_length} 글자\n")
+                f.write(f"개선된 길이: {improved_length} 글자\n")
+            
+            self.logger.info("\n=== 소설 개선 완료 ===")
+            self.logger.info(f"원본 길이: {original_length} 글자")
+            self.logger.info(f"개선된 길이: {improved_length} 글자")
+            self.logger.info(f"개선된 파일 저장됨: {improved_story_path}")
+            self.logger.info("=== 프로세스 완료 ===\n")
+            
+            return {
+                'title': structure['제목'],
+                'original_content': original_content,
+                'improved_content': improved_content,
+                'improved_file': improved_story_path
+            }
+            
+        except Exception as e:
+            self.logger.error(f"소설 개선 중 오류 발생: {e}")
+            self.logger.exception("상세 오류 정보:")
+            return None
+
 def main():
     parser = argparse.ArgumentParser(description='트렌드 기반 스토리 생성기')
     parser.add_argument('--llm-type', 
@@ -1558,8 +1963,13 @@ def main():
                        help='LMStudio 서버 URL')
     parser.add_argument('--resume-from', 
                        help='기존 작업을 이어서 할 디렉토리 경로 (예: 2024-02-03_소설제목)')
+    parser.add_argument('--refine-story',
+                       help='기존 소설을 개선할 디렉토리 경로 (예: 2024-02-03_소설제목)')
     
     args = parser.parse_args()
+    
+    # 절대 경로로 output 디렉토리 설정
+    base_output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
     
     kwargs = {}
     if args.llm_type == 'gguf':
@@ -1580,10 +1990,24 @@ def main():
     
     generator = StoryGenerator(llm_type=args.llm_type, **kwargs)
     
-    if args.resume_from:
+    if args.refine_story:
+        # 개선 모드: 기존 소설 개선
+        story_path = os.path.join(base_output_dir, args.refine_story) if not args.refine_story.startswith(base_output_dir) else args.refine_story
+        print(f"\n기존 소설 개선 시작: {story_path}")
+        result = generator.refine_existing_story(story_path)
+        
+        if result:
+            print("\n소설 개선 완료:")
+            print("-" * 50)
+            print(f"제목: {result['title']}")
+            print(f"개선된 파일: {result['improved_file']}")
+        else:
+            print("\n소설 개선에 실패했습니다.")
+    elif args.resume_from:
         # 재개 모드: analysis.json과 structure.json 확인
-        analysis_path = os.path.join(args.resume_from, 'analysis.json')
-        structure_path = os.path.join(args.resume_from, 'structure.json')
+        resume_path = os.path.join(base_output_dir, args.resume_from) if not args.resume_from.startswith(base_output_dir) else args.resume_from
+        analysis_path = os.path.join(resume_path, 'analysis.json')
+        structure_path = os.path.join(resume_path, 'structure.json')
         
         if not os.path.exists(analysis_path) or not os.path.exists(structure_path):
             print(f"필수 파일을 찾을 수 없습니다:")
@@ -1593,8 +2017,8 @@ def main():
                 print(f"- {structure_path}")
             return
             
-        print(f"\n기존 작업 재개: {args.resume_from}")
-        story = generator.generate_story(trending_topics=[], output_dir=args.resume_from)
+        print(f"\n기존 작업 재개: {resume_path}")
+        story = generator.generate_story(trending_topics=[], output_dir=resume_path)
         
         if story:
             print("\n소설 생성 완료:")
@@ -1605,7 +2029,7 @@ def main():
             print("\n소설 생성에 실패했습니다.")
             if generator.current_dir:
                 print(f"다음 명령으로 재시작할 수 있습니다:")
-                print(f"python story_generator.py --resume-from {generator.current_dir}")
+                print(f"python story_generator.py --resume-from {os.path.relpath(generator.current_dir, base_output_dir)}")
     else:
         # 새로 시작: 트렌드 데이터 수집
         trending_topics = generator.collect_trending_topics()
@@ -1631,7 +2055,7 @@ def main():
                 print("\n소설 생성에 실패했습니다.")
                 if generator.current_dir:
                     print(f"다음 명령으로 재시작할 수 있습니다:")
-                    print(f"python story_generator.py --resume-from {generator.current_dir}")
+                    print(f"python story_generator.py --resume-from {os.path.relpath(generator.current_dir, base_output_dir)}")
         else:
             print("트렌드 수집에 실패했습니다.")
 
